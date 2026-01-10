@@ -7,90 +7,96 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 public class ProxyService extends Service {
     private Process gostProcess;
+    private boolean isRunning = false;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 1. 必须先创建通知，否则服务会被系统杀死
         createNotification();
-
-        // 2. 异步启动 Gost
-        new Thread(this::runGost).start();
-
-        return START_STICKY;
+        if (!isRunning) {
+            isRunning = true;
+            new Thread(this::runGost).start();
+        }
+        return START_NOT_STICKY;
     }
 
     private void createNotification() {
-        String channelId = "gost_service_id";
+        String channelId = "gost_service_fix";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(channelId, "Gost Service", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel channel = new NotificationChannel(channelId, "Gost Proxy", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
         }
         Notification notification = new Notification.Builder(this, channelId)
                 .setContentTitle("Gost 代理运行中")
-                .setContentText("服务已启动 (Port 1080)")
+                .setContentText("TargetSDK 28 Compatibility Mode")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .build();
         startForeground(1, notification);
     }
 
+    private void sendLog(String msg) {
+        // 发送广播给主界面显示
+        Intent intent = new Intent("com.example.gostproxy.LOG");
+        intent.putExtra("msg", msg);
+        sendBroadcast(intent);
+    }
+
     private void runGost() {
         try {
-            // 1. 准备配置文件
+            sendLog("正在检查环境...");
             String configPath = copyAsset("gost.json", "gost.json");
             copyAsset("peer.txt", "peer.txt");
 
-            // 2. 准备可执行文件 (关键步骤)
+            // 确定架构
             File binFile = new File(getFilesDir(), "gost_exec");
-            
-            // 根据 CPU 架构选择对应的核心
-            String assetName = "gost_v7a"; // 默认 32位
+            String assetName = "gost_v7a";
             for (String abi : Build.SUPPORTED_ABIS) {
-                if (abi.contains("arm64")) {
-                    assetName = "gost_v8a"; // 如果是 64位机器，用 64位核心
-                    break;
-                }
+                if (abi.contains("arm64")) { assetName = "gost_v8a"; break; }
             }
-            
-            // 复制核心到私有目录
+            sendLog("检测到架构: " + assetName);
             copyAsset(assetName, "gost_exec");
 
-            // 3. 赋予可执行权限 (chmod 777)
-            // Java 的 setExecutable 有时不灵，用 Shell 强制给权限
-            Runtime.getRuntime().exec("chmod 777 " + binFile.getAbsolutePath()).waitFor();
+            // 授权 (关键)
+            sendLog("正在赋予执行权限...");
+            Process chmod = Runtime.getRuntime().exec("chmod 777 " + binFile.getAbsolutePath());
+            chmod.waitFor();
 
-            // 4. 执行命令
-            // ./gost_exec -C gost.json
+            // 启动
+            sendLog("正在启动 Gost 核心...");
             ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath(), "-C", configPath);
-            pb.directory(getFilesDir()); // 设置工作目录
+            pb.directory(getFilesDir()); // 设置工作目录，确保能读到 peer.txt
             pb.redirectErrorStream(true);
+            
             gostProcess = pb.start();
+            sendLog("Gost 进程已创建 PID: " + (Build.VERSION.SDK_INT >= 26 ? gostProcess.pid() : "未知"));
 
-            // 5. 保持读取日志，防止缓冲区堵塞导致进程挂起
+            // 读取日志
             BufferedReader reader = new BufferedReader(new InputStreamReader(gostProcess.getInputStream()));
             String line;
             while ((line = reader.readLine()) != null) {
-                // System.out.println("GostLog: " + line);
+                sendLog("[Core] " + line);
             }
+            
+            int exitCode = gostProcess.waitFor();
+            sendLog("Gost 进程异常退出，代码: " + exitCode);
+            isRunning = false;
 
         } catch (Exception e) {
+            sendLog("严重错误: " + e.getMessage());
             e.printStackTrace();
-            // 如果出错，服务可能会停止，这里可以加日志
+            isRunning = false;
         }
     }
 
-    // 辅助：从 Assets 复制到 Files 目录
     private String copyAsset(String assetName, String destName) throws Exception {
         File file = new File(getFilesDir(), destName);
-        // 如果文件不存在或需要强制更新，则复制
-        // 这里每次启动都复制，确保文件是完整的
         try (InputStream in = getAssets().open(assetName);
              FileOutputStream out = new FileOutputStream(file)) {
             byte[] buffer = new byte[1024];

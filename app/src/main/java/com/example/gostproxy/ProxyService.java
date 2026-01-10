@@ -71,11 +71,12 @@ public class ProxyService extends Service {
             // 启动
             sendLog("正在启动 Gost 核心...");
             ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath(), "-C", configPath);
-            pb.directory(getFilesDir()); // 设置工作目录，确保能读到 peer.txt
+            pb.directory(getFilesDir()); // 设置工作目录
             pb.redirectErrorStream(true);
             
             gostProcess = pb.start();
-            sendLog("Gost 进程已创建 PID: " + (Build.VERSION.SDK_INT >= 26 ? gostProcess.pid() : "未知"));
+            // 【已修复】删除了报错的 pid() 调用，直接显示提示
+            sendLog("Gost 进程已创建，正在监听日志...");
 
             // 读取日志
             BufferedReader reader = new BufferedReader(new InputStreamReader(gostProcess.getInputStream()));

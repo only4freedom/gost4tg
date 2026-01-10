@@ -13,7 +13,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ProxyService extends Service {
     private Process gostProcess;
@@ -37,7 +40,7 @@ public class ProxyService extends Service {
         }
         Notification notification = new Notification.Builder(this, channelId)
                 .setContentTitle("Gost 代理运行中")
-                .setContentText("Hardcoded Config Mode")
+                .setContentText("DNS Resolved Mode")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .build();
         startForeground(1, notification);
@@ -52,16 +55,12 @@ public class ProxyService extends Service {
     private void runGost() {
         try {
             sendLog("正在生成标准配置文件...");
-            
-            // 【核弹级修复】直接用 Java 代码写入 gost.json
-            // 这样 100% 保证 DNS 配置生效，且没有格式错误
             createGostJson();
 
-            // 依然需要清洗 peer.txt (去除 \r)
-            sendLog("正在处理节点列表...");
-            smartCopyAsset("peer.txt", "peer.txt");
+            // 【关键步骤】处理节点列表：去换行符 + 域名自动转IP
+            sendLog("正在解析节点域名...");
+            processPeerFile("peer.txt", "peer.txt");
 
-            // 准备二进制文件
             File binFile = new File(getFilesDir(), "gost_exec");
             String assetName = "gost_v7a";
             for (String abi : Build.SUPPORTED_ABIS) {
@@ -73,14 +72,11 @@ public class ProxyService extends Service {
             sendLog("正在赋予执行权限...");
             Runtime.getRuntime().exec("chmod 777 " + binFile.getAbsolutePath()).waitFor();
 
-            sendLog("正在启动 Gost (读取本地配置)...");
-            
-            // 【关键修复】移除了 -dns 参数，回归 -C gost.json
+            sendLog("正在启动 Gost...");
             ProcessBuilder pb = new ProcessBuilder(
                 binFile.getAbsolutePath(), 
                 "-C", new File(getFilesDir(), "gost.json").getAbsolutePath()
             );
-            
             pb.directory(getFilesDir()); 
             pb.redirectErrorStream(true);
             
@@ -104,56 +100,107 @@ public class ProxyService extends Service {
         }
     }
 
-    // 【新增】手动生成 gost.json 文件
     private void createGostJson() throws Exception {
-        // 这里写入你最完美的配置，包含 DNS 和所有参数
-        // 223.5.5.5 是阿里DNS，1.1.1.1 是 CF DNS
+        // DNS字段主要用于内部解析，虽然对peer连接可能无效，但保留作为fallback
         String jsonContent = "{\n" +
                 "    \"Debug\": true,\n" +
                 "    \"Retries\": 60,\n" +
-                "    \"DNS\": \"223.5.5.5:53,8.8.8.8:53,1.1.1.1:53\",\n" +
-                "    \"ServeNodes\": [\n" +
-                "        \"auto://:1080\"\n" +
-                "    ],\n" +
-                "    \"ChainNodes\": [\n" +
-                "        \"?peer=peer.txt\"\n" +
-                "    ]\n" +
+                "    \"DNS\": \"223.5.5.5:53,8.8.8.8:53\",\n" +
+                "    \"ServeNodes\": [ \"auto://:1080\" ],\n" +
+                "    \"ChainNodes\": [ \"?peer=peer.txt\" ]\n" +
                 "}";
-
         File file = new File(getFilesDir(), "gost.json");
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(jsonContent.getBytes(StandardCharsets.UTF_8));
         }
     }
 
-    // 智能复制 peer.txt (去换行符)
-    private String smartCopyAsset(String assetName, String destName) throws Exception {
-        File file = new File(getFilesDir(), destName);
-        try (InputStream in = getAssets().open(assetName);
-             FileOutputStream out = new FileOutputStream(file)) {
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            int nRead;
-            byte[] data = new byte[1024];
-            while ((nRead = in.read(data, 0, data.length)) != -1) {
-                buffer.write(data, 0, nRead);
+    // 【核心黑科技】处理 peer.txt：去换行符 + DNS 预解析
+    private void processPeerFile(String assetName, String destName) throws Exception {
+        // 1. 读取原文件
+        InputStream in = getAssets().open(assetName);
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] data = new byte[1024];
+        int nRead;
+        while ((nRead = in.read(data, 0, data.length)) != -1) buffer.write(data, 0, nRead);
+        in.close();
+        
+        String content = buffer.toString("UTF-8");
+        // 去除 Windows 换行符
+        content = content.replace("\r", "");
+        
+        // 2. 逐行分析，替换域名为 IP
+        StringBuilder newContent = new StringBuilder();
+        String[] lines = content.split("\n");
+        
+        for (String line : lines) {
+            if (line.trim().startsWith("#") || line.trim().isEmpty()) {
+                newContent.append(line).append("\n");
+                continue;
             }
-            buffer.flush();
-            String content = buffer.toString("UTF-8");
-            String fixedContent = content.replace("\r", "");
-            out.write(fixedContent.getBytes(StandardCharsets.UTF_8));
+            
+            // 尝试提取域名进行解析
+            // 逻辑：找到最后一个 @ 之后，或者 :// 之后，直到最后一个 : 之前的内容
+            try {
+                String processedLine = resolveLine(line);
+                newContent.append(processedLine).append("\n");
+            } catch (Exception e) {
+                // 如果解析失败，保留原样，防止破坏格式
+                sendLog("DNS解析跳过: " + e.getMessage());
+                newContent.append(line).append("\n");
+            }
         }
-        return file.getAbsolutePath();
+
+        // 3. 写入新文件
+        File file = new File(getFilesDir(), destName);
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write(newContent.toString().getBytes(StandardCharsets.UTF_8));
+        }
     }
 
-    // 二进制复制
+    // 单行解析逻辑
+    private String resolveLine(String line) {
+        // 简单粗暴的定位：找 host
+        // 假设格式是 scheme://[user:pass@]HOST:PORT
+        int start = line.lastIndexOf("@");
+        if (start == -1) {
+            start = line.indexOf("://");
+            if (start != -1) start += 3;
+        } else {
+            start += 1;
+        }
+        
+        int end = line.lastIndexOf(":");
+        // 如果没有端口，end 就是行尾? 不，gost 节点通常都有端口
+        
+        if (start != -1 && end != -1 && end > start) {
+            String host = line.substring(start, end);
+            // 检查 host 是否包含字母 (如果是纯IP就不解析)
+            if (host.matches(".*[a-zA-Z].*")) {
+                try {
+                    sendLog("正在解析域名: " + host);
+                    // 使用 Java 的 DNS 解析能力
+                    InetAddress address = InetAddress.getByName(host);
+                    String ip = address.getHostAddress();
+                    sendLog("域名 " + host + " -> " + ip);
+                    
+                    // 替换字符串
+                    return line.substring(0, start) + ip + line.substring(end);
+                } catch (Exception e) {
+                    sendLog("解析失败: " + host);
+                }
+            }
+        }
+        return line;
+    }
+
     private void copyBinaryAsset(String assetName, String destName) throws Exception {
         File file = new File(getFilesDir(), destName);
-        // 只有当文件不存在时才复制? 不，为了保险，每次都覆盖
         try (InputStream in = getAssets().open(assetName);
              FileOutputStream out = new FileOutputStream(file)) {
             byte[] buffer = new byte[1024];
-            int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+            int nRead;
+            while ((nRead = in.read(data, 0, data.length)) != -1) out.write(buffer, 0, nRead);
         }
     }
 

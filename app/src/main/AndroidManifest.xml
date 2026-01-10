@@ -7,8 +7,9 @@
 
     <application
         android:allowBackup="true"
+        android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="GostV2-Proxy"
+        android:label="GostV2"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         
         <activity android:name=".MainActivity"

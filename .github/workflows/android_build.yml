@@ -1,4 +1,4 @@
-name: Build Gost V2 APK
+name: Build Gost V2 APK (Binary Mode)
 
 on:
   push:
@@ -11,86 +11,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        check-latest: true
-
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Install Gomobile
-      run: |
-        go install golang.org/x/mobile/cmd/gomobile@latest
-        gomobile init
-
-    - name: Build Go Library (AAR)
-      run: |
-        # 1. 准备源码
-        rm -rf gostlib
-        mkdir gostlib
-        git clone --depth 1 https://github.com/ginuerzh/gost.git temp_src
-        cp temp_src/*.go gostlib/
-        rm -rf temp_src
-        
-        cd gostlib
-
-        # 2. 【大扫除】删除所有非核心功能的复杂文件
-        # 删除: QUIC(HTTP3), KCP, OBFS(混淆), SSH, HTTP2
-        # 只保留最纯净的 HTTP/SOCKS5 代理功能，确保编译 100% 成功
-        rm -f quic.go obfs.go kcp.go ssh.go http2.go h2.go h2c.go
-        
-        # 3. 修改包名为 gostlib
-        sed -i 's/^package .*/package gostlib/' *.go
-
-        # 4. 【外科手术】清理残留引用
-        # 暴力删除 import 行，防止 Go 尝试下载这些库
-        sed -i '/git.torproject.org/d' *.go
-        sed -i '/quic-go/d' *.go
-        sed -i '/kcp-go/d' *.go
-        sed -i '/net\/http\/h2c/d' *.go
-        
-        # 注释掉所有调用了被删功能代码的行
-        sed -i 's/.*quic\..*/\/\/ &/' *.go
-        sed -i 's/.*obfs\..*/\/\/ &/' *.go
-        sed -i 's/.*kcp\..*/\/\/ &/' *.go
-        sed -i 's/.*ssh\..*/\/\/ &/' *.go
-        sed -i 's/.*http2\..*/\/\/ &/' *.go
-        sed -i 's/.*h2\..*/\/\/ &/' *.go
-
-        # 5. 创建启动器 wrapper.go
-        cat <<EOW > wrapper.go
-        package gostlib
-        import ("flag"; "os")
-        func Start(configPath string) {
-            flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-            os.Args = []string{"gost", "-C", configPath}
-            Run()
-        }
-        EOW
-
-        # 6. 创建假引用保活
-        echo 'package gostlib' > dummy_import.go
-        echo 'import _ "golang.org/x/mobile/bind"' >> dummy_import.go
-        
-        # 7. 初始化 Module
-        go mod init gostlib
-        go mod edit -go=1.24
-        
-        # 8. 【核心修正】锁定正确的 relay 版本
-        # 之前写错了 v0.1.1，正确的旧版 tag 是 v0.1.0
-        go mod edit -replace github.com/go-gost/relay=github.com/go-gost/relay@v0.1.0
-        
-        # 9. 下载依赖
-        go get golang.org/x/mobile/bind
-        go mod tidy
-        
-        # 10. 编译
-        gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
 
     - name: Create Gradle Build Files
       run: |
@@ -98,14 +26,14 @@ jobs:
         echo "allprojects { repositories { google(); mavenCentral() } }" >> build.gradle
         
         echo "apply plugin: 'com.android.application'" > app/build.gradle
-        echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 21; targetSdk 33; versionCode 1; versionName '1.0'; } }" >> app/build.gradle
-        echo "dependencies { implementation files('src/main/libs/gostlib.aar') }" >> app/build.gradle
-
+        # 注意: 这里的 ndk.abiFilters 确保只打包 arm 架构
+        echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 21; targetSdk 33; versionCode 1; versionName '1.0'; ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' } } }" >> app/build.gradle
+        
     - name: Build APK
       run: gradle assembleDebug --no-daemon
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: gost-v2-proxy.apk
+        name: gost-v2-binary.apk
         path: app/build/outputs/apk/debug/app-debug.apk

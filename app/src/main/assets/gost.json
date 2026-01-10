@@ -1,0 +1,10 @@
+{
+    "Debug": false,
+    "Retries": 60,
+    "ServeNodes": [
+        "auto://:1080"
+    ],
+    "ChainNodes": [
+        "?peer=peer.txt"
+    ]
+}

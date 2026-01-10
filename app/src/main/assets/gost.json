@@ -1,6 +1,7 @@
 {
-    "Debug": false,
+    "Debug": true,
     "Retries": 60,
+    "DNS": "223.5.5.5:53,119.29.29.29:53,8.8.8.8:53",
     "ServeNodes": [
         "auto://:1080"
     ],

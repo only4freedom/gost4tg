@@ -31,10 +31,14 @@ jobs:
     - name: Build Go Library (AAR)
       run: |
         cd gostlib
-        # 强制更新 go.mod 防止版本冲突
+        # 强制更新 go.mod 标准
         go mod edit -go=1.24
+        
+        # 【关键修复】手动下载缺失的 bind 依赖包
+        go get golang.org/x/mobile/bind
+        
         go mod tidy
-        # 【关键修复】增加 -androidapi 21 参数，解决 NDK 报错
+        # 编译库
         gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
 
     - name: Create Gradle Build Files
@@ -43,7 +47,6 @@ jobs:
         echo "allprojects { repositories { google(); mavenCentral() } }" >> build.gradle
         
         echo "apply plugin: 'com.android.application'" > app/build.gradle
-        # 这里的 minSdk 也对应改成 21
         echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 21; targetSdk 33; versionCode 1; versionName '1.0'; } }" >> app/build.gradle
         echo "dependencies { implementation files('src/main/libs/gostlib.aar') }" >> app/build.gradle
 

@@ -20,15 +20,75 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
+    # 【关键修复1】安装指定版本的 Gradle (8.2)，避免使用不兼容的 9.x
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.2'
+
+    # 【关键修复2】生成规范的多行构建文件，并补全 settings.gradle
     - name: Create Gradle Build Files
       run: |
-        echo "buildscript { repositories { google(); mavenCentral() } dependencies { classpath 'com.android.tools.build:gradle:7.4.2' } }" > build.gradle
-        echo "allprojects { repositories { google(); mavenCentral() } }" >> build.gradle
+        # 1. 生成 settings.gradle (项目结构文件)
+        echo "include ':app'" > settings.gradle
         
-        echo "apply plugin: 'com.android.application'" > app/build.gradle
-        # 注意: 这里的 ndk.abiFilters 确保只打包 arm 架构
-        echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 21; targetSdk 33; versionCode 1; versionName '1.0'; ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' } } }" >> app/build.gradle
+        # 2. 生成根目录 build.gradle (使用 AGP 8.1.1 配合 Gradle 8.2)
+        cat <<EOG > build.gradle
+        buildscript {
+            repositories {
+                google()
+                mavenCentral()
+            }
+            dependencies {
+                classpath 'com.android.tools.build:gradle:8.1.1'
+            }
+        }
+        allprojects {
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
+        task clean(type: Delete) {
+            delete rootProject.buildDir
+        }
+        EOG
         
+        # 3. 生成 app/build.gradle (模块配置)
+        cat <<EOG > app/build.gradle
+        plugins {
+            id 'com.android.application'
+        }
+        
+        android {
+            namespace 'com.example.gostproxy'
+            compileSdk 33
+            
+            defaultConfig {
+                applicationId 'com.example.gostproxy'
+                minSdk 21
+                targetSdk 33
+                versionCode 1
+                versionName '1.0'
+                
+                // 确保只打包 ARM 架构的 so 库
+                ndk {
+                    abiFilters 'arm64-v8a', 'armeabi-v7a'
+                }
+            }
+            
+            // 解决资源未找到的常见报错
+            aaptOptions {
+                noCompress "tflite"
+            }
+        }
+        
+        // 伪装 so 库需要这行配置，确保 gradle 把它当做本地库打包
+        dependencies {
+            implementation fileTree(dir: 'libs', include: ['*.jar'])
+        }
+        EOG
+
     - name: Build APK
       run: gradle assembleDebug --no-daemon
 

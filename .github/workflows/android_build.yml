@@ -39,22 +39,29 @@ jobs:
         
         cd gostlib
 
-        # 2. 【外科手术】删除会导致编译失败的复杂功能文件
-        # 用户只需要 HTTP/SOCKS5，这俩文件是报错源头，直接删
-        rm quic.go obfs.go
+        # 2. 【核心操作】彻底删除导致报错的复杂功能文件
+        # 只保留 HTTP/SOCKS5 核心，删除 QUIC, KCP, OBFS, SSH, HTTP2 等可选插件
+        # 这些文件是依赖地狱的源头
+        rm -f quic.go obfs.go kcp.go ssh.go http2.go
         
         # 3. 修改包名为 gostlib
         sed -i 's/^package .*/package gostlib/' *.go
 
-        # 4. 【关键】注释掉代码中所有引用 quic 和 obfs 的地方
-        # 这一步会把所有涉及 quic/obfs 的代码行变成注释，防止 Go 编译器报错
+        # 4. 【外科手术】清理残留引用
+        # 删除所有包含 git.torproject.org (obfs4) 的 import 行
+        sed -i '/git.torproject.org/d' *.go
+        # 删除所有包含 quic-go 的 import 行
+        sed -i '/quic-go/d' *.go
+        # 删除所有包含 kcp-go 的 import 行
+        sed -i '/kcp-go/d' *.go
+        
+        # 注释掉所有调用了 quic/obfs/kcp/ssh 功能的代码行
+        # 防止 Go 编译器因为找不到包而报错
         sed -i 's/.*quic\..*/\/\/ &/' *.go
         sed -i 's/.*obfs\..*/\/\/ &/' *.go
-        
-        # 修复 imports (删除未使用的 import)
-        # 因为我们注释掉了代码，引用也没用了，用 goimports 清理一下最稳，但这里我们用 brute force
-        # 简单粗暴替换掉 github.com/lucas-clemente/quic-go 防止编译器去下载它
-        sed -i 's|github.com/lucas-clemente/quic-go|runtime|g' *.go
+        sed -i 's/.*kcp\..*/\/\/ &/' *.go
+        sed -i 's/.*ssh\..*/\/\/ &/' *.go
+        sed -i 's/.*http2\..*/\/\/ &/' *.go
 
         # 5. 创建启动器 wrapper.go
         cat <<EOW > wrapper.go
@@ -75,16 +82,18 @@ jobs:
         go mod init gostlib
         go mod edit -go=1.24
         
-        # 8. 锁定 relay 版本 (解决 req.Flags undefined 问题)
-        # 必须强制使用 v0.1.1 这种老版本，新版本改了 API
+        # 8. 【关键】锁定 relay 版本
+        # 修复 req.Flags undefined 错误，必须用旧版
         go mod edit -replace github.com/go-gost/relay=github.com/go-gost/relay@v0.1.1
         
-        # 下载依赖
+        # 9. 下载依赖
+        # 注意：这里不再执行 go get github.com/ginuerzh/gost
         go get golang.org/x/mobile/bind
-        go get github.com/ginuerzh/gost
+        
+        # 让 Go 自动分析剩余的合法依赖 (只剩标准库和基础库了)
         go mod tidy
         
-        # 9. 编译
+        # 10. 编译
         gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
 
     - name: Create Gradle Build Files

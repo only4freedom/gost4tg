@@ -30,19 +30,59 @@ jobs:
 
     - name: Build Go Library (AAR)
       run: |
-        cd gostlib
-        # 更新 mod 版本
-        go mod edit -go=1.24
+        # 1. 重新准备源码目录
+        rm -rf gostlib
+        mkdir gostlib
         
-        # 【绝杀招】创建一个假文件，强行引用 bind 包，防止被系统清理
+        # 2. 下载 GOST V2 源码
+        git clone --depth 1 https://github.com/ginuerzh/gost.git temp_src
+        # 只复制根目录下的核心逻辑文件
+        cp temp_src/*.go gostlib/
+        rm -rf temp_src
+        
+        cd gostlib
+
+        # 3. 【核心修复】强制将所有文件的包名改为 gostlib
+        # 解决 found packages gost and gostlib 的错误
+        sed -i 's/^package .*/package gostlib/' *.go
+
+        # 4. 创建启动器 wrapper.go
+        # 因为我们改了包名，现在可以直接调用原版代码里的 Run() 函数
+        cat <<EOW > wrapper.go
+        package gostlib
+        
+        import (
+            "flag"
+            "os"
+        )
+        
+        // Start 是给安卓调用的接口
+        func Start(configPath string) {
+            // 重置 flag，防止多次启动报错
+            flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+            
+            // 模拟命令行参数：gost -C config.json
+            os.Args = []string{"gost", "-C", configPath}
+            
+            // 直接调用 gost 核心的 Run 方法 (它定义在 gost.go 中，现在属于 gostlib 包)
+            Run()
+        }
+        EOW
+
+        # 5. 创建假引用以保留依赖
         echo 'package gostlib' > dummy_import.go
         echo 'import _ "golang.org/x/mobile/bind"' >> dummy_import.go
         
-        # 再次下载并整理
+        # 6. 初始化模块并整理依赖
+        go mod init gostlib
+        go mod edit -go=1.24
+        
+        # 手动下载必要依赖
         go get golang.org/x/mobile/bind
+        go get github.com/ginuerzh/gost # 获取项目自身的外部依赖
         go mod tidy
         
-        # 开始编译
+        # 7. 开始编译
         gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
 
     - name: Create Gradle Build Files

@@ -39,10 +39,17 @@ jobs:
         
         cd gostlib
 
-        # 2. 修改包名为 gostlib
+        # 2. 【第一刀】修改包名为 gostlib
         sed -i 's/^package .*/package gostlib/' *.go
 
-        # 3. 创建启动器 wrapper.go
+        # 3. 【第二刀】源码级替换：将所有死掉的 obfs4 地址替换为 Gitlab 活地址
+        # 这一步直接修改 .go 文件内容，不再依赖 go.mod replace
+        sed -i 's|git.torproject.org/pluggable-transports/obfs4.git|gitlab.com/yawning/obfs4.git|g' *.go
+
+        # 4. 【第三刀】源码级替换：修复 tls-dissector 库改名的问题
+        sed -i 's|github.com/ginuerzh/tls-dissector|github.com/go-gost/tls-dissector|g' *.go
+
+        # 5. 创建启动器 wrapper.go
         cat <<EOW > wrapper.go
         package gostlib
         import ("flag"; "os")
@@ -53,29 +60,27 @@ jobs:
         }
         EOW
 
-        # 4. 创建假引用保活
+        # 6. 创建假引用保活
         echo 'package gostlib' > dummy_import.go
         echo 'import _ "golang.org/x/mobile/bind"' >> dummy_import.go
         
-        # 5. 【核心修复】初始化并替换失效的依赖地址
+        # 7. 初始化 Go Module
         go mod init gostlib
         go mod edit -go=1.24
         
-        # 修复 obfs4: 原地址已失效，替换为 Gitlab 新地址
-        go mod edit -replace git.torproject.org/pluggable-transports/obfs4.git=gitlab.com/yawning/obfs4.git@v0.0.0-20231019065609-bc370b284852
-        
-        # 修复 tls-dissector: 库改名了，强制替换为新名字
-        go mod edit -replace github.com/ginuerzh/tls-dissector=github.com/go-gost/tls-dissector@v0.1.0
-        
-        # 修复 quic-go: 锁定一个兼容 V2 的旧版本，防止去下载不兼容的新版
+        # 8. 【关键】锁定旧版依赖
+        # quic-go 必须用旧版 (v0.28.0) 才能兼容 GOST V2 的代码
         go mod edit -replace github.com/lucas-clemente/quic-go=github.com/lucas-clemente/quic-go@v0.28.0
-
-        # 6. 下载依赖
+        
+        # 9. 手动下载修改后的依赖
+        go get gitlab.com/yawning/obfs4.git
+        go get github.com/go-gost/tls-dissector
         go get golang.org/x/mobile/bind
-        go get github.com/ginuerzh/gost # 获取其他依赖
+        
+        # 自动整理剩余依赖
         go mod tidy
         
-        # 7. 编译
+        # 10. 编译
         gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
 
     - name: Create Gradle Build Files

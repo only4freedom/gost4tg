@@ -15,8 +15,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class ProxyService extends Service {
     private Process gostProcess;
@@ -57,7 +55,6 @@ public class ProxyService extends Service {
             sendLog("正在生成标准配置文件...");
             createGostJson();
 
-            // 【关键步骤】处理节点列表：去换行符 + 域名自动转IP
             sendLog("正在解析节点域名...");
             processPeerFile("peer.txt", "peer.txt");
 
@@ -101,7 +98,6 @@ public class ProxyService extends Service {
     }
 
     private void createGostJson() throws Exception {
-        // DNS字段主要用于内部解析，虽然对peer连接可能无效，但保留作为fallback
         String jsonContent = "{\n" +
                 "    \"Debug\": true,\n" +
                 "    \"Retries\": 60,\n" +
@@ -115,9 +111,7 @@ public class ProxyService extends Service {
         }
     }
 
-    // 【核心黑科技】处理 peer.txt：去换行符 + DNS 预解析
     private void processPeerFile(String assetName, String destName) throws Exception {
-        // 1. 读取原文件
         InputStream in = getAssets().open(assetName);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] data = new byte[1024];
@@ -126,10 +120,8 @@ public class ProxyService extends Service {
         in.close();
         
         String content = buffer.toString("UTF-8");
-        // 去除 Windows 换行符
         content = content.replace("\r", "");
         
-        // 2. 逐行分析，替换域名为 IP
         StringBuilder newContent = new StringBuilder();
         String[] lines = content.split("\n");
         
@@ -138,30 +130,22 @@ public class ProxyService extends Service {
                 newContent.append(line).append("\n");
                 continue;
             }
-            
-            // 尝试提取域名进行解析
-            // 逻辑：找到最后一个 @ 之后，或者 :// 之后，直到最后一个 : 之前的内容
             try {
                 String processedLine = resolveLine(line);
                 newContent.append(processedLine).append("\n");
             } catch (Exception e) {
-                // 如果解析失败，保留原样，防止破坏格式
                 sendLog("DNS解析跳过: " + e.getMessage());
                 newContent.append(line).append("\n");
             }
         }
 
-        // 3. 写入新文件
         File file = new File(getFilesDir(), destName);
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(newContent.toString().getBytes(StandardCharsets.UTF_8));
         }
     }
 
-    // 单行解析逻辑
     private String resolveLine(String line) {
-        // 简单粗暴的定位：找 host
-        // 假设格式是 scheme://[user:pass@]HOST:PORT
         int start = line.lastIndexOf("@");
         if (start == -1) {
             start = line.indexOf("://");
@@ -169,22 +153,16 @@ public class ProxyService extends Service {
         } else {
             start += 1;
         }
-        
         int end = line.lastIndexOf(":");
-        // 如果没有端口，end 就是行尾? 不，gost 节点通常都有端口
         
         if (start != -1 && end != -1 && end > start) {
             String host = line.substring(start, end);
-            // 检查 host 是否包含字母 (如果是纯IP就不解析)
             if (host.matches(".*[a-zA-Z].*")) {
                 try {
                     sendLog("正在解析域名: " + host);
-                    // 使用 Java 的 DNS 解析能力
                     InetAddress address = InetAddress.getByName(host);
                     String ip = address.getHostAddress();
                     sendLog("域名 " + host + " -> " + ip);
-                    
-                    // 替换字符串
                     return line.substring(0, start) + ip + line.substring(end);
                 } catch (Exception e) {
                     sendLog("解析失败: " + host);
@@ -194,13 +172,14 @@ public class ProxyService extends Service {
         return line;
     }
 
+    // 【已修复】这里之前变量名写错了，现在统一为 buffer
     private void copyBinaryAsset(String assetName, String destName) throws Exception {
         File file = new File(getFilesDir(), destName);
         try (InputStream in = getAssets().open(assetName);
              FileOutputStream out = new FileOutputStream(file)) {
             byte[] buffer = new byte[1024];
             int nRead;
-            while ((nRead = in.read(data, 0, data.length)) != -1) out.write(buffer, 0, nRead);
+            while ((nRead = in.read(buffer, 0, buffer.length)) != -1) out.write(buffer, 0, nRead);
         }
     }
 

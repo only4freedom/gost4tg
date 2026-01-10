@@ -39,29 +39,28 @@ jobs:
         
         cd gostlib
 
-        # 2. 【核心操作】彻底删除导致报错的复杂功能文件
-        # 只保留 HTTP/SOCKS5 核心，删除 QUIC, KCP, OBFS, SSH, HTTP2 等可选插件
-        # 这些文件是依赖地狱的源头
-        rm -f quic.go obfs.go kcp.go ssh.go http2.go
+        # 2. 【大扫除】删除所有非核心功能的复杂文件
+        # 删除: QUIC(HTTP3), KCP, OBFS(混淆), SSH, HTTP2
+        # 只保留最纯净的 HTTP/SOCKS5 代理功能，确保编译 100% 成功
+        rm -f quic.go obfs.go kcp.go ssh.go http2.go h2.go h2c.go
         
         # 3. 修改包名为 gostlib
         sed -i 's/^package .*/package gostlib/' *.go
 
         # 4. 【外科手术】清理残留引用
-        # 删除所有包含 git.torproject.org (obfs4) 的 import 行
+        # 暴力删除 import 行，防止 Go 尝试下载这些库
         sed -i '/git.torproject.org/d' *.go
-        # 删除所有包含 quic-go 的 import 行
         sed -i '/quic-go/d' *.go
-        # 删除所有包含 kcp-go 的 import 行
         sed -i '/kcp-go/d' *.go
+        sed -i '/net\/http\/h2c/d' *.go
         
-        # 注释掉所有调用了 quic/obfs/kcp/ssh 功能的代码行
-        # 防止 Go 编译器因为找不到包而报错
+        # 注释掉所有调用了被删功能代码的行
         sed -i 's/.*quic\..*/\/\/ &/' *.go
         sed -i 's/.*obfs\..*/\/\/ &/' *.go
         sed -i 's/.*kcp\..*/\/\/ &/' *.go
         sed -i 's/.*ssh\..*/\/\/ &/' *.go
         sed -i 's/.*http2\..*/\/\/ &/' *.go
+        sed -i 's/.*h2\..*/\/\/ &/' *.go
 
         # 5. 创建启动器 wrapper.go
         cat <<EOW > wrapper.go
@@ -82,15 +81,12 @@ jobs:
         go mod init gostlib
         go mod edit -go=1.24
         
-        # 8. 【关键】锁定 relay 版本
-        # 修复 req.Flags undefined 错误，必须用旧版
-        go mod edit -replace github.com/go-gost/relay=github.com/go-gost/relay@v0.1.1
+        # 8. 【核心修正】锁定正确的 relay 版本
+        # 之前写错了 v0.1.1，正确的旧版 tag 是 v0.1.0
+        go mod edit -replace github.com/go-gost/relay=github.com/go-gost/relay@v0.1.0
         
         # 9. 下载依赖
-        # 注意：这里不再执行 go get github.com/ginuerzh/gost
         go get golang.org/x/mobile/bind
-        
-        # 让 Go 自动分析剩余的合法依赖 (只剩标准库和基础库了)
         go mod tidy
         
         # 10. 编译

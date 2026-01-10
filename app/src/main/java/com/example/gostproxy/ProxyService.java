@@ -14,6 +14,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
+import java.net.Inet4Address; // 【新增】用于识别 IPv4
 import java.nio.charset.StandardCharsets;
 
 public class ProxyService extends Service {
@@ -38,7 +39,7 @@ public class ProxyService extends Service {
         }
         Notification notification = new Notification.Builder(this, channelId)
                 .setContentTitle("Gost 代理运行中")
-                .setContentText("DNS Resolved Mode")
+                .setContentText("Force IPv4 Mode")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .build();
         startForeground(1, notification);
@@ -55,7 +56,7 @@ public class ProxyService extends Service {
             sendLog("正在生成标准配置文件...");
             createGostJson();
 
-            sendLog("正在解析节点域名...");
+            sendLog("正在解析节点域名 (优先IPv4)...");
             processPeerFile("peer.txt", "peer.txt");
 
             File binFile = new File(getFilesDir(), "gost_exec");
@@ -159,11 +160,30 @@ public class ProxyService extends Service {
             String host = line.substring(start, end);
             if (host.matches(".*[a-zA-Z].*")) {
                 try {
-                    sendLog("正在解析域名: " + host);
-                    InetAddress address = InetAddress.getByName(host);
-                    String ip = address.getHostAddress();
-                    sendLog("域名 " + host + " -> " + ip);
-                    return line.substring(0, start) + ip + line.substring(end);
+                    sendLog("正在解析: " + host);
+                    
+                    // 【核心修改】获取所有 IP，优先选 IPv4
+                    InetAddress[] addresses = InetAddress.getAllByName(host);
+                    String selectedIp = null;
+                    
+                    // 1. 第一遍循环：找 IPv4
+                    for (InetAddress addr : addresses) {
+                        if (addr instanceof Inet4Address) {
+                            selectedIp = addr.getHostAddress();
+                            break;
+                        }
+                    }
+                    
+                    // 2. 如果没找到 IPv4，才勉强用第一个 (IPv6)
+                    if (selectedIp == null && addresses.length > 0) {
+                        selectedIp = addresses[0].getHostAddress();
+                    }
+                    
+                    if (selectedIp != null) {
+                        sendLog("域名 " + host + " -> " + selectedIp);
+                        return line.substring(0, start) + selectedIp + line.substring(end);
+                    }
+                    
                 } catch (Exception e) {
                     sendLog("解析失败: " + host);
                 }
@@ -172,7 +192,6 @@ public class ProxyService extends Service {
         return line;
     }
 
-    // 【已修复】这里之前变量名写错了，现在统一为 buffer
     private void copyBinaryAsset(String assetName, String destName) throws Exception {
         File file = new File(getFilesDir(), destName);
         try (InputStream in = getAssets().open(assetName);

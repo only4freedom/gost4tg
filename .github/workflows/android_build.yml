@@ -14,7 +14,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'    # 这里升级到了 1.24 以配合最新的 gomobile
+        go-version: '1.24'
         check-latest: true
 
     - name: Set up JDK 17
@@ -31,10 +31,11 @@ jobs:
     - name: Build Go Library (AAR)
       run: |
         cd gostlib
-        # 强制更新 go.mod 到新版本标准，防止报错
+        # 强制更新 go.mod 防止版本冲突
         go mod edit -go=1.24
         go mod tidy
-        gomobile bind -target=android -o ../app/src/main/libs/gostlib.aar .
+        # 【关键修复】增加 -androidapi 21 参数，解决 NDK 报错
+        gomobile bind -target=android -androidapi 21 -o ../app/src/main/libs/gostlib.aar .
 
     - name: Create Gradle Build Files
       run: |
@@ -42,7 +43,8 @@ jobs:
         echo "allprojects { repositories { google(); mavenCentral() } }" >> build.gradle
         
         echo "apply plugin: 'com.android.application'" > app/build.gradle
-        echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 26; targetSdk 33; versionCode 1; versionName '1.0'; } }" >> app/build.gradle
+        # 这里的 minSdk 也对应改成 21
+        echo "android { namespace 'com.example.gostproxy'; compileSdk 33; defaultConfig { applicationId 'com.example.gostproxy'; minSdk 21; targetSdk 33; versionCode 1; versionName '1.0'; } }" >> app/build.gradle
         echo "dependencies { implementation files('src/main/libs/gostlib.aar') }" >> app/build.gradle
 
     - name: Build APK

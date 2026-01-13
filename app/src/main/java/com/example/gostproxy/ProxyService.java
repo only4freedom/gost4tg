@@ -41,7 +41,7 @@ public class ProxyService extends Service {
         }
         Notification notification = new Notification.Builder(this, channelId)
                 .setContentTitle("Gost 代理运行中")
-                .setContentText("Auto-Host Rewrite Mode")
+                .setContentText("Target IP Param Mode")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .build();
         startForeground(1, notification);
@@ -58,7 +58,7 @@ public class ProxyService extends Service {
             sendLog("正在生成配置...");
             createGostJson();
 
-            sendLog("正在优化节点 (重写为 Host 模式)...");
+            sendLog("正在解析 IP 并重写参数...");
             processPeerFile("peer.txt", "peer.txt");
 
             File binFile = new File(getFilesDir(), "gost_exec");
@@ -101,7 +101,7 @@ public class ProxyService extends Service {
     }
 
     private void createGostJson() throws Exception {
-        // DNS 依然保留，双重保险
+        // DNS 依然保留作为 fallback
         String jsonContent = "{\n" +
                 "    \"Debug\": true,\n" +
                 "    \"Retries\": 60,\n" +
@@ -136,15 +136,15 @@ public class ProxyService extends Service {
                 continue;
             }
             try {
-                // 如果这行已经包含了 ?host= 或者 ?ip=，说明用户是高手，我们就不乱改了
-                if (trimmed.contains("?host=") || trimmed.contains("?ip=")) {
+                // 如果用户已经手动写了 ?ip=，就不再处理
+                if (trimmed.contains("?ip=") || trimmed.contains("&ip=")) {
                     newContent.append(line).append("\n");
                 } else {
-                    String processedLine = rewriteLineToHostMode(line);
+                    String processedLine = appendIpParam(line);
                     newContent.append(processedLine).append("\n");
                 }
             } catch (Exception e) {
-                sendLog("跳过行: " + e.getMessage());
+                sendLog("处理失败: " + e.getMessage());
                 newContent.append(line).append("\n");
             }
         }
@@ -155,10 +155,9 @@ public class ProxyService extends Service {
         }
     }
 
-    // 【核心黑科技】把 "relay://domain:port" 重写为 "relay://ip:port?host=domain"
-    private String rewriteLineToHostMode(String line) {
+    // 【核心修改】保持原域名不变，在末尾追加 ?ip=1.2.3.4
+    private String appendIpParam(String line) {
         // 1. 提取域名
-        // 假设格式 ...@domain:port... 或 ...://domain:port...
         int atIndex = line.lastIndexOf("@");
         int protocolIndex = line.indexOf("://");
         
@@ -169,35 +168,26 @@ public class ProxyService extends Service {
             start = protocolIndex + 3;
         }
         
-        if (start == -1) return line; // 没找到域名开始的地方
+        if (start == -1) return line; 
 
-        int end = line.lastIndexOf(":"); // 找端口前的冒号
-        if (end <= start) return line; // 没找到端口
+        int end = line.lastIndexOf(":"); 
+        if (end <= start) return line; 
 
         String domain = line.substring(start, end);
 
-        // 如果是纯 IP，就不需要改写
+        // 如果已经是IP，不需要加参数
         if (!domain.matches(".*[a-zA-Z].*")) return line;
 
-        sendLog("优化域名: " + domain);
-        
-        // 2. 获取 IPv4 (优先系统DNS，失败则HTTPDNS)
+        sendLog("解析: " + domain);
         String ip = resolveToIpv4(domain);
 
         if (ip != null) {
-            sendLog("-> IP: " + ip);
-            
-            // 3. 拼接新字符串
-            // 原: relay+mwss://user:pass@domain:2053
-            // 新: relay+mwss://user:pass@1.2.3.4:2053?host=domain
-            
-            String part1 = line.substring(0, start);
-            String part2 = line.substring(end); // 包含 :2053
-            
-            // 检查原来是否已经有参数了 (即是否包含 ?)
+            sendLog("-> " + ip);
+            // 拼接逻辑:
+            // 检查原行是否已经有参数 (?)
             String separator = line.contains("?") ? "&" : "?";
-            
-            return part1 + ip + part2 + separator + "host=" + domain;
+            // 追加 ip 参数
+            return line + separator + "ip=" + ip;
         } else {
             sendLog("解析失败，保持原样");
             return line;

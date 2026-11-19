@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
         registerReceiver(logReceiver, filter); // 注意：targetSdk 28 允许隐式广播
 
         // 前台服务负责维持 Gost 进程。
-        startGostService(new Intent(this, ProxyService.class));
+        startGostService(this, new Intent(this, ProxyService.class));
 
         // 只在尚未处理过且仍受电池优化限制时提示；用户也可随时点设置按钮。
         maybePromptBatteryOptimization();

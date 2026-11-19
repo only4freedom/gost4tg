@@ -3,6 +3,7 @@ package com.example.gostproxy;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
@@ -20,11 +21,22 @@ import java.net.InetAddress;
 import java.net.Inet4Address;
 
 public class ProxyService extends Service {
+    public static final String ACTION_STOP = "com.example.gostproxy.action.STOP";
+    private static final int NOTIFICATION_ID = 1;
+
     private Process gostProcess;
-    private boolean isRunning = false;
+    private volatile boolean isRunning = false;
+    private volatile boolean stopRequested = false;
+    private final Object processLock = new Object();
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopGostAndService(startId);
+            return START_NOT_STICKY;
+        }
+
+        stopRequested = false;
         createNotification();
         if (!isRunning) {
             isRunning = true;
@@ -39,12 +51,26 @@ public class ProxyService extends Service {
             NotificationChannel channel = new NotificationChannel(channelId, "Gost Proxy", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
         }
-        Notification notification = new Notification.Builder(this, channelId)
+
+        Intent stopIntent = new Intent(this, ProxyService.class);
+        stopIntent.setAction(ACTION_STOP);
+        int pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingIntentFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent stopPendingIntent = PendingIntent.getService(this, 1, stopIntent, pendingIntentFlags);
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, channelId)
+                : new Notification.Builder(this).setPriority(Notification.PRIORITY_LOW);
+        Notification notification = builder
                 .setContentTitle("Gost 代理运行中")
                 .setContentText("Target IP Param Mode")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "退出", stopPendingIntent)
                 .build();
-        startForeground(1, notification);
+        startForeground(NOTIFICATION_ID, notification);
     }
 
     private void sendLog(String msg) {
@@ -55,12 +81,15 @@ public class ProxyService extends Service {
 
     private void runGost() {
         try {
+            if (stopRequested) return;
             sendLog("正在生成配置...");
             createGostJson();
 
+            if (stopRequested) return;
             sendLog("正在解析 IP 并重写参数...");
             processPeerFile("peer.txt", "peer.txt");
 
+            if (stopRequested) return;
             File binFile = new File(getFilesDir(), "gost_exec");
             String assetName = "gost_v7a";
             for (String abi : Build.SUPPORTED_ABIS) {
@@ -69,6 +98,7 @@ public class ProxyService extends Service {
             sendLog("检测到架构: " + assetName);
             copyBinaryAsset(assetName, "gost_exec");
 
+            if (stopRequested) return;
             sendLog("正在赋予执行权限...");
             Runtime.getRuntime().exec("chmod 777 " + binFile.getAbsolutePath()).waitFor();
 
@@ -79,17 +109,26 @@ public class ProxyService extends Service {
             );
             pb.directory(getFilesDir()); 
             pb.redirectErrorStream(true);
-            
-            gostProcess = pb.start();
+
+            Process process;
+            synchronized (processLock) {
+                if (stopRequested) return;
+                process = pb.start();
+                gostProcess = process;
+                if (stopRequested) {
+                    destroyGostProcess(process);
+                    return;
+                }
+            }
             sendLog("服务已启动! 监听日志中...");
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(gostProcess.getInputStream()));
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
             while ((line = reader.readLine()) != null) {
                 sendLog("[Core] " + line);
             }
             
-            int exitCode = gostProcess.waitFor();
+            int exitCode = process.waitFor();
             sendLog("Gost 进程退出，代码: " + exitCode);
             isRunning = false;
 
@@ -232,9 +271,41 @@ public class ProxyService extends Service {
         }
     }
 
+    private void stopGostAndService(int startId) {
+        stopRequested = true;
+        synchronized (processLock) {
+            if (gostProcess != null) {
+                destroyGostProcess(gostProcess);
+                gostProcess = null;
+            }
+        }
+        isRunning = false;
+        stopForeground(true);
+        stopSelf(startId);
+    }
+
+    private void destroyGostProcess(Process process) {
+        if (process == null) return;
+        process.destroy();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                if (process.isAlive()) process.destroyForcibly();
+            } catch (Exception ignored) {
+                // destroy() 已先行调用；此处仅作为 API 26+ 的强制结束兜底。
+            }
+        }
+    }
+
     @Override
     public void onDestroy() {
-        if (gostProcess != null) gostProcess.destroy();
+        stopRequested = true;
+        synchronized (processLock) {
+            if (gostProcess != null) {
+                destroyGostProcess(gostProcess);
+                gostProcess = null;
+            }
+        }
+        isRunning = false;
         super.onDestroy();
     }
 

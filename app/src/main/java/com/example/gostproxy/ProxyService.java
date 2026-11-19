@@ -22,11 +22,16 @@ import java.net.Inet4Address;
 
 public class ProxyService extends Service {
     public static final String ACTION_STOP = "com.example.gostproxy.action.STOP";
+    public static final String ACTION_RESTART = "com.example.gostproxy.action.RESTART";
     private static final int NOTIFICATION_ID = 1;
+    private static final String PREFS_NAME = "gost_settings";
+    private static final String PREF_LISTEN_PORT = "listen_port";
 
     private Process gostProcess;
     private volatile boolean isRunning = false;
     private volatile boolean stopRequested = false;
+    private volatile boolean restartRequested = false;
+    private final Object workerLock = new Object();
     private final Object processLock = new Object();
 
     @Override
@@ -36,13 +41,46 @@ public class ProxyService extends Service {
             return START_NOT_STICKY;
         }
 
-        stopRequested = false;
         createNotification();
-        if (!isRunning) {
-            isRunning = true;
-            new Thread(this::runGost).start();
+
+        if (intent != null && ACTION_RESTART.equals(intent.getAction())) {
+            restartGost();
+            return START_NOT_STICKY;
+        }
+
+        synchronized (workerLock) {
+            if (!isRunning) startGostWorkerLocked();
         }
         return START_NOT_STICKY;
+    }
+
+    private void startGostWorkerLocked() {
+        stopRequested = false;
+        isRunning = true;
+        new Thread(this::runGost, "GostProxyWorker").start();
+    }
+
+    private void restartGost() {
+        synchronized (workerLock) {
+            restartRequested = true;
+            stopRequested = true;
+        }
+
+        synchronized (processLock) {
+            if (gostProcess != null) {
+                destroyGostProcess(gostProcess);
+                gostProcess = null;
+            }
+        }
+
+        synchronized (workerLock) {
+            // If the previous worker already finished, no finally block remains to
+            // perform the queued restart, so start it here.
+            if (!isRunning && restartRequested) {
+                restartRequested = false;
+                startGostWorkerLocked();
+            }
+        }
     }
 
     private void createNotification() {
@@ -130,22 +168,37 @@ public class ProxyService extends Service {
             
             int exitCode = process.waitFor();
             sendLog("Gost 进程退出，代码: " + exitCode);
-            isRunning = false;
 
         } catch (Exception e) {
             sendLog("错误: " + e.getMessage());
             e.printStackTrace();
-            isRunning = false;
+        } finally {
+            finishGostWorker();
+        }
+    }
+
+    private void finishGostWorker() {
+        synchronized (workerLock) {
+            if (restartRequested) {
+                restartRequested = false;
+                startGostWorkerLocked();
+            } else {
+                isRunning = false;
+            }
         }
     }
 
     private void createGostJson() throws Exception {
         // DNS 依然保留作为 fallback
+        int listenPort = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(PREF_LISTEN_PORT, 1080);
+        if (listenPort < 1024 || listenPort > 65535) listenPort = 1080;
+
         String jsonContent = "{\n" +
                 "    \"Debug\": true,\n" +
                 "    \"Retries\": 60,\n" +
                 "    \"DNS\": \"223.5.5.5:53,8.8.8.8:53\",\n" +
-                "    \"ServeNodes\": [ \"auto://:1080\" ],\n" +
+                "    \"ServeNodes\": [ \"auto://:" + listenPort + "\" ],\n" +
                 "    \"ChainNodes\": [ \"?peer=peer.txt\" ]\n" +
                 "}";
         File file = new File(getFilesDir(), "gost.json");
@@ -272,14 +325,17 @@ public class ProxyService extends Service {
     }
 
     private void stopGostAndService(int startId) {
-        stopRequested = true;
+        synchronized (workerLock) {
+            restartRequested = false;
+            stopRequested = true;
+            isRunning = false;
+        }
         synchronized (processLock) {
             if (gostProcess != null) {
                 destroyGostProcess(gostProcess);
                 gostProcess = null;
             }
         }
-        isRunning = false;
         stopForeground(true);
         stopSelf(startId);
     }
@@ -298,14 +354,17 @@ public class ProxyService extends Service {
 
     @Override
     public void onDestroy() {
-        stopRequested = true;
+        synchronized (workerLock) {
+            restartRequested = false;
+            stopRequested = true;
+            isRunning = false;
+        }
         synchronized (processLock) {
             if (gostProcess != null) {
                 destroyGostProcess(gostProcess);
                 gostProcess = null;
             }
         }
-        isRunning = false;
         super.onDestroy();
     }
 

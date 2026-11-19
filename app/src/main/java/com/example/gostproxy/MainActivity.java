@@ -13,17 +13,22 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
+import android.text.InputType;
 
 public class MainActivity extends Activity {
     private static final String PREFS_NAME = "gost_settings";
     private static final String PREF_AUTO_START = "auto_start_enabled";
     private static final String PREF_BATTERY_PROMPT_SHOWN = "battery_prompt_shown";
+    private static final String PREF_LISTEN_PORT = "listen_port";
 
     private TextView logView;
     private ScrollView scrollView;
+    private EditText portInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,6 +51,33 @@ public class MainActivity extends Activity {
                         .apply());
         root.addView(autoStart, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView portLabel = new TextView(this);
+        portLabel.setText("本地监听端口（1024–65535）");
+        portLabel.setTextColor(0xFFFFFFFF);
+        root.addView(portLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        portInput = new EditText(this);
+        portInput.setSingleLine(true);
+        portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        portInput.setHint("默认 1080");
+        portInput.setTextColor(0xFFFFFFFF);
+        portInput.setHintTextColor(0xFFAAAAAA);
+        int savedPort = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(PREF_LISTEN_PORT, 1080);
+        portInput.setText(String.valueOf(savedPort));
+        root.addView(portInput, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        Button savePortButton = new Button(this);
+        savePortButton.setText("保存并重启代理");
+        savePortButton.setOnClickListener(v -> savePortAndRestart());
+        root.addView(savePortButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         Button batterySettings = new Button(this);
@@ -76,6 +108,35 @@ public class MainActivity extends Activity {
 
         // 只在尚未处理过且仍受电池优化限制时提示；用户也可随时点设置按钮。
         maybePromptBatteryOptimization();
+    }
+
+    private void savePortAndRestart() {
+        String value = portInput.getText().toString().trim();
+        final int port;
+        try {
+            port = Integer.parseInt(value);
+        } catch (NumberFormatException invalidPort) {
+            portInput.setError("请输入有效端口");
+            return;
+        }
+
+        if (port < 1024 || port > 65535) {
+            portInput.setError("端口范围应为 1024–65535");
+            return;
+        }
+
+        boolean saved = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putInt(PREF_LISTEN_PORT, port)
+                .commit();
+        if (!saved) {
+            Toast.makeText(this, "保存端口失败", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Toast.makeText(this, "端口已保存，正在重启代理", Toast.LENGTH_SHORT).show();
+        Intent restartIntent = new Intent(this, ProxyService.class);
+        restartIntent.setAction(ProxyService.ACTION_RESTART);
+        startGostService(this, restartIntent);
     }
 
     private void maybePromptBatteryOptimization() {
